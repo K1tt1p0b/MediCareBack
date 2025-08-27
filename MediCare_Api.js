@@ -1,14 +1,16 @@
 const express = require('express');
+const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const mysql = require('mysql2/promise');
 require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(express.json());
+app.use(cors());
 
 // Database Connection
 const db = mysql.createPool({
@@ -47,7 +49,7 @@ const authorizeRole = (role) => (req, res, next) => {
 // 1. Authentication & User Management APIs
 // =================================================================
 
-// POST /auth/register (สำหรับการสมัครผู้ป่วยเท่านั้น)
+// register (สำหรับการสมัครผู้ป่วยเท่านั้น)
 app.post('/auth/register', async (req, res) => {
     const { username, password, fullName } = req.body;
     if (!username || !password || !fullName) {
@@ -71,7 +73,7 @@ app.post('/auth/register', async (req, res) => {
     }
 });
 
-// POST /auth/login
+// login
 app.post('/auth/login', async (req, res) => {
     const { username, password } = req.body;
     if (!username || !password) {
@@ -79,21 +81,31 @@ app.post('/auth/login', async (req, res) => {
     }
 
     try {
-        const [rows] = await db.query('SELECT id, password_hash, role FROM users WHERE username = ?', [username]);
+        // แก้ไข SQL query ให้ดึง full_name มาด้วย
+        const [rows] = await db.query('SELECT id, password_hash, role, full_name FROM users WHERE username = ?', [username]);
         const user = rows[0];
 
         if (!user || !(await bcrypt.compare(password, user.password_hash))) {
-            return res.status(401).send('Invalid username or password.');
+            return res.status(401).json({ message: 'Invalid username or password.' });
         }
 
         const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '1h' });
-        res.json({ token });
+        
+        // ส่ง token และ object user ที่มี full_name กลับไป
+        res.json({ 
+            token,
+            user: {
+                id: user.id,
+                full_name: user.full_name,
+                role: user.role
+            }
+        });
     } catch (error) {
-        res.status(500).send('Internal Server Error');
+        res.status(500).json({ message: 'Internal Server Error' });
     }
 });
 
-// GET /users/me
+// get profile
 app.get('/users/me', authenticateToken, async (req, res) => {
     try {
         const [rows] = await db.query('SELECT username, full_name, email, phone_number, address, role FROM users WHERE id = ?', [req.user.id]);
@@ -106,16 +118,35 @@ app.get('/users/me', authenticateToken, async (req, res) => {
     }
 });
 
-// PUT /users/me
+// edit profile
 app.put('/users/me', authenticateToken, async (req, res) => {
     const { full_name, email, phone_number, address } = req.body;
+    
+    // สร้าง Array สำหรับเก็บค่าที่จะอัปเดต
+    const updates = {};
+    if (full_name !== undefined) updates.full_name = full_name;
+    if (email !== undefined) updates.email = email;
+    if (phone_number !== undefined) updates.phone_number = phone_number;
+    if (address !== undefined) updates.address = address;
+
+    // ถ้าไม่มีข้อมูลที่จะอัปเดต
+    if (Object.keys(updates).length === 0) {
+        return res.status(400).send('No fields to update.');
+    }
+
+    // สร้าง SQL query แบบ dynamic
+    const setClause = Object.keys(updates).map(key => `${key} = ?`).join(', ');
+    const values = Object.values(updates);
+    values.push(req.user.id);
+    
     try {
         await db.query(
-            'UPDATE users SET full_name = ?, email = ?, phone_number = ?, address = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [full_name, email, phone_number, address, req.user.id]
+            `UPDATE users SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+            values
         );
         res.send('User profile updated successfully.');
     } catch (error) {
+        console.error(error);
         res.status(500).send('Internal Server Error');
     }
 });
