@@ -1,6 +1,6 @@
 ### 1. ติดตั้ง Backend
 
-npm i
+npm install
 
 สร้างไฟล์ `.env`:
 ```env
