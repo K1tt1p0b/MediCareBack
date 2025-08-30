@@ -106,48 +106,119 @@ app.post('/auth/login', async (req, res) => {
 });
 
 // get profile
+// GET /users/me - ดึงข้อมูลโปรไฟล์ของผู้ใช้ (รวม bio และ license_number สำหรับหมอ)
 app.get('/users/me', authenticateToken, async (req, res) => {
     try {
-        const [rows] = await db.query('SELECT username, full_name, email, phone_number, address, role FROM users WHERE id = ?', [req.user.id]);
+        const userId = req.user.id;
+        
+        // ใช้ LEFT JOIN เพื่อดึงข้อมูลจากตาราง doctors ด้วย
+        const [rows] = await db.query(
+            `SELECT
+                u.username,
+                u.full_name,
+                u.email,
+                u.phone_number,
+                u.address,
+                u.role,
+                d.specialty,
+                d.bio,
+                d.license_number
+            FROM users u
+            LEFT JOIN doctors d ON u.id = d.user_id
+            WHERE u.id = ?`,
+            [userId]
+        );
+
         if (rows.length === 0) {
-            return res.status(404).send('User not found.');
+            return res.status(404).json({ error: 'User not found' });
         }
+
         res.json(rows[0]);
     } catch (error) {
-        res.status(500).send('Internal Server Error');
+        console.error('Error fetching user profile:', error);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
-// edit profile
+// PUT /users/me - แก้ไขข้อมูล profile ของผู้ใช้ (รวมถึงข้อมูลแพทย์)
 app.put('/users/me', authenticateToken, async (req, res) => {
-    const { full_name, email, phone_number, address } = req.body;
-    
-    // สร้าง Array สำหรับเก็บค่าที่จะอัปเดต
-    const updates = {};
-    if (full_name !== undefined) updates.full_name = full_name;
-    if (email !== undefined) updates.email = email;
-    if (phone_number !== undefined) updates.phone_number = phone_number;
-    if (address !== undefined) updates.address = address;
+    const { 
+        full_name, 
+        email, 
+        phone_number, 
+        address, 
+        license_number, 
+        bio 
+    } = req.body;
 
-    // ถ้าไม่มีข้อมูลที่จะอัปเดต
-    if (Object.keys(updates).length === 0) {
-        return res.status(400).send('No fields to update.');
-    }
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
 
-    // สร้าง SQL query แบบ dynamic
-    const setClause = Object.keys(updates).map(key => `${key} = ?`).join(', ');
-    const values = Object.values(updates);
-    values.push(req.user.id);
-    
     try {
-        await db.query(
-            `UPDATE users SET ${setClause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-            values
-        );
+        const userId = req.user.id;
+        
+        // อัปเดตข้อมูลในตาราง users
+        const userUpdates = {};
+        const userValues = [];
+        if (full_name !== undefined) {
+            userUpdates.full_name = full_name;
+            userValues.push(full_name);
+        }
+        if (email !== undefined) {
+            userUpdates.email = email;
+            userValues.push(email);
+        }
+        if (phone_number !== undefined) {
+            userUpdates.phone_number = phone_number;
+            userValues.push(phone_number);
+        }
+        if (address !== undefined) {
+            userUpdates.address = address;
+            userValues.push(address);
+        }
+
+        if (Object.keys(userUpdates).length > 0) {
+            const userSetClause = Object.keys(userUpdates).map(key => `${key} = ?`).join(', ');
+            userValues.push(userId);
+            await connection.query(
+                `UPDATE users SET ${userSetClause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+                userValues
+            );
+        }
+
+        // ถ้าผู้ใช้มี role เป็น 'doctor' ให้อัปเดตข้อมูลในตาราง doctors ด้วย
+        const [userCheck] = await connection.query('SELECT role FROM users WHERE id = ?', [userId]);
+        if (userCheck.length > 0 && userCheck[0].role === 'doctor') {
+            const doctorUpdates = {};
+            const doctorValues = [];
+            if (license_number !== undefined) {
+                doctorUpdates.license_number = license_number;
+                doctorValues.push(license_number);
+            }
+            if (bio !== undefined) {
+                doctorUpdates.bio = bio;
+                doctorValues.push(bio);
+            }
+
+            if (Object.keys(doctorUpdates).length > 0) {
+                const doctorSetClause = Object.keys(doctorUpdates).map(key => `${key} = ?`).join(', ');
+                doctorValues.push(userId);
+                await connection.query(
+                    `UPDATE doctors SET ${doctorSetClause} WHERE user_id = ?`,
+                    doctorValues
+                );
+            }
+        }
+        
+        await connection.commit();
         res.send('User profile updated successfully.');
+
     } catch (error) {
-        console.error(error);
+        await connection.rollback();
+        console.error('Error updating user profile:', error);
         res.status(500).send('Internal Server Error');
+    } finally {
+        connection.release();
     }
 });
 
@@ -262,81 +333,6 @@ app.get('/doctors/:id/slots', async (req, res) => {
         res.json(timeSlots);
     } catch (error) {
         console.error('Error fetching time slots:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// GET /doctors/me - ดึงข้อมูล profile ของหมอที่ login อยู่
-app.get('/doctors/me', authenticateToken, authorizeRole('doctor'), async (req, res) => {
-    try {
-        const userId = req.user.id;
-        
-        // ดึงข้อมูลหมอจากตาราง doctors และ users โดยใช้ field names ที่ถูกต้อง
-        const [doctorResult] = await db.query(`
-            SELECT 
-                d.id as doctor_id,
-                d.specialty,
-                d.license_number,
-                d.bio,
-                u.id as user_id,
-                u.username,
-                u.full_name,
-                u.email,
-                u.phone_number,
-                u.address,
-                u.role,
-                u.created_at,
-                u.updated_at
-            FROM doctors d
-            JOIN users u ON d.user_id = u.id
-            WHERE u.id = ?
-        `, [userId]);
-        
-        if (doctorResult.length === 0) {
-            return res.status(404).json({ error: 'Doctor profile not found' });
-        }
-        
-        res.json(doctorResult[0]);
-    } catch (error) {
-        console.error('Error fetching doctor profile:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-
-// PUT /doctors/me - แก้ไขข้อมูล profile ของหมอที่ login อยู่
-app.put('/doctors/me', authenticateToken, authorizeRole('doctor'), async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { license_number, bio } = req.body;
-        
-        // ตรวจสอบว่ามีข้อมูลที่จะอัปเดตหรือไม่
-        const doctorUpdates = {};
-        if (license_number !== undefined) doctorUpdates.license_number = license_number;
-        if (bio !== undefined) doctorUpdates.bio = bio;
-        
-        if (Object.keys(doctorUpdates).length === 0) {
-            return res.status(400).json({ error: 'No fields to update' });
-        }
-        
-        // ตรวจสอบว่าหมอมีอยู่ในระบบหรือไม่
-        const [doctorCheck] = await db.query('SELECT id FROM doctors WHERE user_id = ?', [userId]);
-        if (doctorCheck.length === 0) {
-            return res.status(404).json({ error: 'Doctor profile not found' });
-        }
-        
-        // อัปเดตข้อมูลในตาราง doctors
-        const setClause = Object.keys(doctorUpdates).map(key => `${key} = ?`).join(', ');
-        const values = Object.values(doctorUpdates);
-        values.push(userId);
-        
-        await db.query(
-            `UPDATE doctors SET ${setClause} WHERE user_id = ?`,
-            values
-        );
-        
-        res.send('Doctor profile updated successfully');
-    } catch (error) {
-        console.error('Error updating doctor profile:', error);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
@@ -519,10 +515,24 @@ app.post('/admin/register', async (req, res) => {
 app.get('/admin/users', authenticateToken, authorizeRole('admin'), async (req, res) => {
     try {
         const [users] = await db.query(
-            'SELECT id, username, full_name, email, phone_number, address, role, created_at, updated_at FROM users ORDER BY created_at DESC'
+            `SELECT 
+                u.id, 
+                u.username, 
+                u.full_name, 
+                u.email, 
+                u.phone_number, 
+                u.address, 
+                u.role, 
+                d.specialty,
+                u.created_at, 
+                u.updated_at 
+            FROM users u
+            LEFT JOIN doctors d ON u.id = d.user_id
+            ORDER BY u.created_at DESC`
         );
         res.json(users);
     } catch (error) {
+        console.error('Error fetching users:', error);
         res.status(500).send('Internal Server Error');
     }
 });
@@ -675,6 +685,7 @@ app.get('/admin/patients', authenticateToken, authorizeRole('admin'), async (req
         res.status(500).send('Internal Server Error');
     }
 });
+
 
 // Doctor Management APIs
 app.get('/doctors/me/appointments', authenticateToken, authorizeRole('doctor'), async (req, res) => {
