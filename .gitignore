@@ -1,3 +1,6 @@
 // filepath: c:\Users\UsEr\Desktop\ข้อสอบBackend_Frontend\Backend\.gitignore
-node_modules
+# Environment variables
 .env
+
+# Dependency folder
+node_modules/
