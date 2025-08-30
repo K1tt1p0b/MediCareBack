@@ -74,6 +74,9 @@ npm run dev
 - `doctors` - ข้อมูลหมอ (เชื่อมโยงกับ users)
 - `time_slots` - ช่วงเวลาที่หมอว่าง
 - `appointments` - การนัดหมาย
-
+- 
+## รหัสของ Admin
+kittipob.jir
+123456
 
 
