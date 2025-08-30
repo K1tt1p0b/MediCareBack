@@ -1,5 +1,14 @@
 # MediCare - ระบบจัดการนัดหมายแพทย์
 
+
+## ต้องใช้ Backend ด้วย
+สามารถ Clone Project ตามลิงค์นี้ได้เลย https://github.com/K1tt1p0b/MediCareFront.git
+
+
+## อย่าลืมติดตั้งฐานข้อมูล SQL ด้วย
+DatabaseMediCare.sql
+
+
 ## โครงสร้างโปรเจค
 
 ```
